@@ -1,0 +1,9 @@
+# Secrets and local state. .env.example is committed; .env is not.
+.env
+
+# Scratch space used when a build cache cannot live outside the repo.
+.tmp/
+
+# Local Go caches used when the environment cannot write outside the workspace.
+.gocache/
+.gomodcache/

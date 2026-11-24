@@ -1,0 +1,67 @@
+# sqlc generates the typed Go in internal/platform/db/queries from the SQL below.
+#
+#   sqlc generate     # rerun after editing a query or adding a migration
+#
+# `schema` points at the real migration files, so generated Go can never disagree
+# with what Postgres actually has. sqlc only *parses* them: it never creates a
+# database and never connects to one. Creating the database is `make db-up` and
+# applying these files is `make migrate-up`.
+version: "2"
+sql:
+  - engine: "postgresql"
+    schema: "sql/migrations"
+    queries: "sql/queries"
+    gen:
+      go:
+        package: "queries"
+        out: "internal/platform/db/queries"
+        sql_package: "pgx/v5"
+        emit_json_tags: true
+        # Map Postgres types onto plain Go types so no pgtype wrapper leaks into a
+        # module. pgx converts both directions transparently:
+        #   uuid        <-> string    (sent as text, parsed by Postgres)
+        #   numeric     <-> float64   (pgtype.float64Wrapper implements ScanFloat64
+        #                              and Float64Value)
+        #   timestamptz <-> time.Time
+        # Both the bare and pg_catalog-prefixed spellings are listed because sqlc
+        # reports built-in types either way depending on context.
+        overrides:
+          - db_type: "uuid"
+            go_type: "string"
+          - db_type: "pg_catalog.uuid"
+            go_type: "string"
+          # Nullable columns must be able to represent NULL. Map them to pointer
+          # types instead of the pgtype wrappers sqlc otherwise emits, so a module
+          # only ever deals with *string (for example orders.payment_id).
+          - db_type: "uuid"
+            nullable: true
+            go_type:
+              type: "string"
+              pointer: true
+          - db_type: "pg_catalog.uuid"
+            nullable: true
+            go_type:
+              type: "string"
+              pointer: true
+          - db_type: "text"
+            nullable: true
+            go_type:
+              type: "string"
+              pointer: true
+          - db_type: "pg_catalog.text"
+            nullable: true
+            go_type:
+              type: "string"
+              pointer: true
+          - db_type: "timestamptz"
+            go_type: "time.Time"
+          - db_type: "pg_catalog.timestamptz"
+            go_type: "time.Time"
+          - db_type: "numeric"
+            go_type: "float64"
+          - db_type: "pg_catalog.numeric"
+            go_type: "float64"
+          - db_type: "int4"
+            go_type: "int"
+          - db_type: "pg_catalog.int4"
+            go_type: "int"

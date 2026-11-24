@@ -1,0 +1,1639 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Ego Backend API",
+    "version": "1.0.0",
+    "description": "HTTP API for the Ego backend boilerplate: JWT authentication, user-owned products, orders built from the caller's catalog, and a removable background-jobs demo.\n\n## Authentication\n\nProtected routes expect `Authorization: Bearer <access_token>`. Access tokens are issued by `POST /auth/login` and rotated by `POST /auth/refresh`.\n\nThe refresh token travels only in the `refresh_token` HttpOnly cookie. Register does not sign the user in; log in afterwards. Logout revokes the presented cookie when possible, always clears it, and is idempotent.\n\n## Errors\n\nEvery error response uses the same envelope:\n\n```json\n{\"error\":{\"code\":\"unauthorized\",\"message\":\"invalid or expired token\"}}\n```\n\n## Rate limiting\n\nEvery route except `GET /health` is limited per client IP (20 requests per second by default). Exceeding the limit returns `429` with a `Retry-After` header. Successful and failed limited requests also carry `X-RateLimit-Limit`, `X-RateLimit-Remaining`, and `X-RateLimit-Reset`.\n\n## Documentation\n\nThe raw specification is served at `/openapi.json`; the interactive Swagger UI is served at `/docs/`.",
+    "contact": {
+      "name": "Ego Backend API"
+    }
+  },
+  "servers": [
+    {
+      "url": "/",
+      "description": "The host that serves this specification and the Swagger UI."
+    }
+  ],
+  "tags": [
+    {
+      "name": "Health",
+      "description": "Liveness information for orchestrators and humans."
+    },
+    {
+      "name": "Auth",
+      "description": "Registration, login, refresh-token rotation, and logout."
+    },
+    {
+      "name": "Products",
+      "description": "CRUD for products owned by the authenticated user. Ownership is enforced by every query and missing resources return 404, never 403."
+    },
+    {
+      "name": "Orders",
+      "description": "Create and read orders. Prices, totals, and ownership are computed by the server from the caller's catalog."
+    },
+    {
+      "name": "Demo jobs",
+      "description": "Removable reference module for background jobs. All routes require a signed-in caller, but job records are not user-scoped: any authenticated caller can read a job by its random ID. When removing the demo module, delete these paths, the demo schemas, and this tag."
+    }
+  ],
+  "paths": {
+    "/health": {
+      "get": {
+        "tags": [
+          "Health"
+        ],
+        "operationId": "getHealth",
+        "summary": "Liveness probe",
+        "description": "Reports that the process is serving requests. It performs no auth or dependency checks and is exempt from the rate limiter, so it is safe for container health checks.",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "The process is alive. The response has an empty body."
+          }
+        }
+      }
+    },
+    "/auth/register": {
+      "post": {
+        "tags": [
+          "Auth"
+        ],
+        "operationId": "registerUser",
+        "summary": "Create an account",
+        "description": "Validates and normalizes the email, hashes the password with bcrypt, and creates a user with the default `user` role. Registration deliberately issues no token and no cookie; call `POST /auth/login` afterwards.",
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RegisterRequest"
+              },
+              "example": {
+                "email": "me@example.com",
+                "password": "password123"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Account created. The password hash is never included in the response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RegistrationResponse"
+                },
+                "example": {
+                  "message": "You have successfully registered",
+                  "success": true,
+                  "person": {
+                    "id": "3f2b8c1e-9a4d-4f6b-8e21-7c5d0a1b2c3d",
+                    "email": "me@example.com",
+                    "roles": [
+                      "user"
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "422": {
+            "$ref": "#/components/responses/UnprocessableEntity"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          }
+        }
+      }
+    },
+    "/auth/login": {
+      "post": {
+        "tags": [
+          "Auth"
+        ],
+        "operationId": "loginUser",
+        "summary": "Log in and issue tokens",
+        "description": "Verifies the credentials, returns an access token and the user projection, and sets the `refresh_token` HttpOnly cookie. Unknown email and wrong password return the same 401 body. Swagger UI must be opened from the same host as the API so the browser stores and sends the cookie.",
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LoginRequest"
+              },
+              "example": {
+                "email": "me@example.com",
+                "password": "password123"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Authenticated. The response sets the refresh-token cookie and returns the access token plus the user projection.",
+            "headers": {
+              "Set-Cookie": {
+                "description": "Sets `refresh_token` with `Path=/`, `HttpOnly`, `SameSite=Lax`, the refresh-token lifetime as `Max-Age`, and `Secure` when `COOKIE_SECURE=true`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoginResponse"
+                },
+                "example": {
+                  "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+                  "token_type": "Bearer",
+                  "user": {
+                    "id": "3f2b8c1e-9a4d-4f6b-8e21-7c5d0a1b2c3d",
+                    "email": "me@example.com",
+                    "roles": [
+                      "user"
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          }
+        }
+      }
+    },
+    "/auth/refresh": {
+      "post": {
+        "tags": [
+          "Auth"
+        ],
+        "operationId": "refreshAccessToken",
+        "summary": "Rotate the refresh token and issue a new access token",
+        "description": "Reads the `refresh_token` cookie, validates the refresh JWT, consumes the stored token hash (single use), and returns a new access token while rotating the cookie. A missing, expired, replayed, or revoked token returns 401 and clears the cookie. Swagger UI sends the browser-managed cookie automatically after login; do not paste it into Authorize.",
+        "security": [
+          {
+            "refreshCookie": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A new access token was issued and the refresh cookie was rotated.",
+            "headers": {
+              "Set-Cookie": {
+                "description": "Replaces `refresh_token` with the newly issued refresh token and its attributes.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RefreshResponse"
+                },
+                "example": {
+                  "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+                  "token_type": "Bearer"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          }
+        }
+      }
+    },
+    "/auth/logout": {
+      "post": {
+        "tags": [
+          "Auth"
+        ],
+        "operationId": "logoutUser",
+        "summary": "Log out and clear the refresh cookie",
+        "description": "Revokes the presented refresh token when one exists, then always clears the cookie and returns 200. Logout is idempotent: a missing cookie, an already-used token, or an expired token still returns 200. Access tokens are stateless and remain valid until they expire; only the refresh token is revocable.",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Logged out, or already logged out. The refresh cookie is cleared in every case.",
+            "headers": {
+              "Set-Cookie": {
+                "description": "Clears `refresh_token` by setting an empty value with `Max-Age=-1`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LogoutResponse"
+                },
+                "example": {
+                  "message": "logged out successfully"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
+    },
+    "/products": {
+      "post": {
+        "tags": [
+          "Products"
+        ],
+        "operationId": "createProduct",
+        "summary": "Create a product",
+        "description": "Creates a product owned by the authenticated caller. The owner is taken from the validated JWT, never from the request body.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProductCreateRequest"
+              },
+              "example": {
+                "name": "Widget",
+                "qty": 2,
+                "price": 9.99
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Product created.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Product"
+                },
+                "example": {
+                  "id": "2f4d9d5e-3f1a-4c6b-9f3e-1a2b3c4d5e6f",
+                  "user_id": "3f2b8c1e-9a4d-4f6b-8e21-7c5d0a1b2c3d",
+                  "name": "Widget",
+                  "date_added": "2026-01-15T10:30:00Z",
+                  "qty": 2,
+                  "price": 9.99
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "Products"
+        ],
+        "operationId": "listProducts",
+        "summary": "List the caller's products",
+        "description": "Returns every product owned by the authenticated caller, newest first. An empty catalog is returned as an empty array, never null.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The caller's products.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Product"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          }
+        }
+      }
+    },
+    "/products/{id}": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/ProductID"
+        }
+      ],
+      "get": {
+        "tags": [
+          "Products"
+        ],
+        "operationId": "getProduct",
+        "summary": "Get one product",
+        "description": "Returns one product owned by the authenticated caller. A missing product and a product owned by another user both return 404, so ownership cannot be probed.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The requested product.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Product"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "Products"
+        ],
+        "operationId": "updateProduct",
+        "summary": "Replace a product",
+        "description": "Replaces the mutable fields of a product owned by the authenticated caller. All three fields are required and the request is a full replacement, so omitted values would become zero in the underlying model.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProductUpdateRequest"
+              },
+              "example": {
+                "name": "Widget Pro",
+                "qty": 3,
+                "price": 12.25
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Product updated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Product"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Products"
+        ],
+        "operationId": "deleteProduct",
+        "summary": "Delete a product",
+        "description": "Deletes a product owned by the authenticated caller. Existing order items keep their name and price snapshots; their `product_id` becomes null.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Product deleted. The response has no body."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          }
+        }
+      }
+    },
+    "/orders": {
+      "post": {
+        "tags": [
+          "Orders"
+        ],
+        "operationId": "createOrder",
+        "summary": "Create an order",
+        "description": "Creates an order from product IDs and quantities in the caller's catalog. The server loads the current prices, calculates the total, and stores item snapshots inside one transaction. Client-supplied prices or totals are not accepted. Duplicate product IDs and unknown/foreign product IDs are rejected.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OrderCreateRequest"
+              },
+              "example": {
+                "items": [
+                  {
+                    "product_id": "2f4d9d5e-3f1a-4c6b-9f3e-1a2b3c4d5e6f",
+                    "qty": 2
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Order created with server-computed totals and item snapshots.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Order"
+                },
+                "example": {
+                  "id": "8b1e2f3a-4c5d-6e7f-8a9b-0c1d2e3f4a5b",
+                  "user_id": "3f2b8c1e-9a4d-4f6b-8e21-7c5d0a1b2c3d",
+                  "email": "me@example.com",
+                  "status": "pending",
+                  "total": 19.98,
+                  "created_at": "2026-01-15T10:35:00Z",
+                  "items": [
+                    {
+                      "id": "5c6d7e8f-9a0b-1c2d-3e4f-5a6b7c8d9e0f",
+                      "product_id": "2f4d9d5e-3f1a-4c6b-9f3e-1a2b3c4d5e6f",
+                      "product_name": "Widget",
+                      "unit_price": 9.99,
+                      "qty": 2
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "Orders"
+        ],
+        "operationId": "listOrders",
+        "summary": "List the caller's orders",
+        "description": "Returns every order owned by the authenticated caller, newest first, each with its items. An empty result is returned as an empty array, never null.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The caller's orders.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Order"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          }
+        }
+      }
+    },
+    "/orders/{id}": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/OrderID"
+        }
+      ],
+      "get": {
+        "tags": [
+          "Orders"
+        ],
+        "operationId": "getOrder",
+        "summary": "Get one order",
+        "description": "Returns one order owned by the authenticated caller, with its item snapshots. A missing order and an order owned by another user both return 404.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The requested order.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Order"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          }
+        }
+      }
+    },
+    "/demo/jobs/hello": {
+      "post": {
+        "tags": [
+          "Demo jobs"
+        ],
+        "operationId": "enqueueHelloJob",
+        "summary": "Enqueue the simple demo job",
+        "description": "Stores a queued job record and enqueues the `demo:hello` task on the `default` queue. Returns 202 immediately; the greeting happens later in the worker. Poll `GET /demo/jobs/{id}` to watch the state change. This is the removable reference module.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DemoHelloRequest"
+              },
+              "example": {
+                "name": "Ada"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "The job was accepted and queued.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DemoJob"
+                },
+                "example": {
+                  "id": "0f1e2d3c4b5a69788796a5b4c3d2e1f0",
+                  "type": "demo:hello",
+                  "queue": "default",
+                  "status": "queued",
+                  "attempt": 0,
+                  "max_retry": 2,
+                  "progress": 0,
+                  "total_steps": 1,
+                  "created_at": "2026-01-15T10:40:00Z",
+                  "updated_at": "2026-01-15T10:40:00Z"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          }
+        }
+      }
+    },
+    "/demo/jobs/report": {
+      "post": {
+        "tags": [
+          "Demo jobs"
+        ],
+        "operationId": "enqueueReportJob",
+        "summary": "Enqueue the multi-step demo job",
+        "description": "Stores a queued job record and enqueues the `demo:report` task on the `critical` queue. The worker writes progress at every step; `fail_on_attempt` makes one numbered attempt fail on purpose so the retry/backoff path is visible. Returns 202 immediately. This is the removable reference module.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DemoReportRequest"
+              },
+              "example": {
+                "steps": 5,
+                "fail_on_attempt": 0,
+                "delay_seconds": 0
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "The job was accepted and queued.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DemoJob"
+                },
+                "example": {
+                  "id": "9a8b7c6d5e4f30211203f4e5d6c7b8a9",
+                  "type": "demo:report",
+                  "queue": "critical",
+                  "status": "queued",
+                  "attempt": 0,
+                  "max_retry": 3,
+                  "progress": 0,
+                  "total_steps": 5,
+                  "created_at": "2026-01-15T10:41:00Z",
+                  "updated_at": "2026-01-15T10:41:00Z"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          }
+        }
+      }
+    },
+    "/demo/jobs/{id}": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/DemoJobID"
+        }
+      ],
+      "get": {
+        "tags": [
+          "Demo jobs"
+        ],
+        "operationId": "getDemoJob",
+        "summary": "Get the current state of a demo job",
+        "description": "Returns the Redis-backed state the API and worker update. States progress through `queued`, `running`, `retrying`, `completed`, or `failed`. Demo job records are not user-scoped; any authenticated caller can read a job by its random ID. This is the removable reference module.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The current job state.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DemoJob"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "Access token returned by `POST /auth/login` or `POST /auth/refresh`. In Swagger UI, click Authorize and paste the token without the `Bearer ` prefix."
+      },
+      "refreshCookie": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "refresh_token",
+        "description": "HttpOnly refresh cookie set by `POST /auth/login`. Same-origin browsers send it automatically. Do not paste it into the Authorize dialog; log in through Swagger UI first and keep the UI on the same host as the API."
+      }
+    },
+    "parameters": {
+      "ProductID": {
+        "name": "id",
+        "in": "path",
+        "required": true,
+        "description": "Canonical hyphenated UUID of the product.",
+        "schema": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "example": "2f4d9d5e-3f1a-4c6b-9f3e-1a2b3c4d5e6f"
+      },
+      "OrderID": {
+        "name": "id",
+        "in": "path",
+        "required": true,
+        "description": "Canonical hyphenated UUID of the order.",
+        "schema": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "example": "8b1e2f3a-4c5d-6e7f-8a9b-0c1d2e3f4a5b"
+      },
+      "DemoJobID": {
+        "name": "id",
+        "in": "path",
+        "required": true,
+        "description": "128-bit random job ID: 32 lowercase hexadecimal characters.",
+        "schema": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{32}$"
+        },
+        "example": "0f1e2d3c4b5a69788796a5b4c3d2e1f0"
+      }
+    },
+    "headers": {
+      "Retry-After": {
+        "description": "Seconds to wait before retrying.",
+        "schema": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "X-RateLimit-Limit": {
+        "description": "Maximum requests allowed in the current rate-limit window.",
+        "schema": {
+          "type": "integer"
+        }
+      },
+      "X-RateLimit-Remaining": {
+        "description": "Requests remaining in the current window.",
+        "schema": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "X-RateLimit-Reset": {
+        "description": "Seconds until the current rate-limit window resets.",
+        "schema": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "responses": {
+      "BadRequest": {
+        "description": "Malformed request. Invalid JSON, unknown fields, trailing data, or a malformed path identifier. The `error.code` is usually `invalid_request`; domain validation uses `invalid_product`, `invalid_order`, or `invalid_demo_job`.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorEnvelope"
+            },
+            "example": {
+              "error": {
+                "code": "invalid_request",
+                "message": "request body must be valid JSON"
+              }
+            }
+          }
+        }
+      },
+      "Unauthorized": {
+        "description": "Authentication failed. This includes a missing or malformed Bearer token, an invalid or expired access token, a missing/invalid/replayed refresh cookie, a valid token whose user no longer exists, or (for login) invalid credentials. See `error.code`.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorEnvelope"
+            },
+            "example": {
+              "error": {
+                "code": "unauthorized",
+                "message": "invalid or expired token"
+              }
+            }
+          }
+        }
+      },
+      "NotFound": {
+        "description": "The resource does not exist or is not owned by the authenticated caller. Product and order ownership is deliberately not disclosed. For order creation this also means one or more requested products were not found in the caller's catalog.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorEnvelope"
+            },
+            "example": {
+              "error": {
+                "code": "not_found",
+                "message": "product not found"
+              }
+            }
+          }
+        }
+      },
+      "UnprocessableEntity": {
+        "description": "Registration validation failed: invalid email, password outside 8-72 bytes, or duplicate email. The `error.code` is `validation_error`.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorEnvelope"
+            },
+            "example": {
+              "error": {
+                "code": "validation_error",
+                "message": "password must be between 8 and 72 bytes"
+              }
+            }
+          }
+        }
+      },
+      "TooManyRequests": {
+        "description": "The per-IP rate limit was exceeded. Wait for the delay in `Retry-After` before retrying.",
+        "headers": {
+          "Retry-After": {
+            "$ref": "#/components/headers/Retry-After"
+          },
+          "X-RateLimit-Limit": {
+            "$ref": "#/components/headers/X-RateLimit-Limit"
+          },
+          "X-RateLimit-Remaining": {
+            "$ref": "#/components/headers/X-RateLimit-Remaining"
+          },
+          "X-RateLimit-Reset": {
+            "$ref": "#/components/headers/X-RateLimit-Reset"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorEnvelope"
+            },
+            "example": {
+              "error": {
+                "code": "too_many_requests",
+                "message": "rate limit exceeded, slow down"
+              }
+            }
+          }
+        }
+      },
+      "InternalServerError": {
+        "description": "An unexpected server-side failure. The `error.code` is `internal_error`; details are logged with the request ID and never returned to the client.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorEnvelope"
+            },
+            "example": {
+              "error": {
+                "code": "internal_error",
+                "message": "could not complete request"
+              }
+            }
+          }
+        }
+      }
+    },
+    "schemas": {
+      "ErrorDetail": {
+        "type": "object",
+        "description": "Machine-readable error code and a safe human-readable message.",
+        "required": [
+          "code",
+          "message"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "Stable machine-readable code, for example `unauthorized`, `not_found`, `validation_error`, or `invalid_product`.",
+            "example": "unauthorized"
+          },
+          "message": {
+            "type": "string",
+            "description": "Short human-readable explanation that is safe to show to the caller.",
+            "example": "invalid or expired token"
+          }
+        }
+      },
+      "ErrorEnvelope": {
+        "type": "object",
+        "description": "The single JSON envelope every error response uses.",
+        "required": [
+          "error"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/ErrorDetail"
+          }
+        }
+      },
+      "User": {
+        "type": "object",
+        "description": "Public user projection. The password hash is tagged with `json:\"-\"` and can never appear in a response.",
+        "required": [
+          "id",
+          "email",
+          "roles"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "example": "3f2b8c1e-9a4d-4f6b-8e21-7c5d0a1b2c3d"
+          },
+          "email": {
+            "type": "string",
+            "format": "email",
+            "example": "me@example.com"
+          },
+          "roles": {
+            "type": "array",
+            "description": "Roles from the users.roles text[] column. New accounts start with `[\"user\"]`.",
+            "items": {
+              "type": "string"
+            },
+            "example": [
+              "user"
+            ]
+          }
+        }
+      },
+      "RegisterRequest": {
+        "type": "object",
+        "required": [
+          "email",
+          "password"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "email": {
+            "type": "string",
+            "format": "email",
+            "description": "Trimmed and lowercased before validation and storage. Must be a bare address with a dotted domain; display-name forms and dotless domains are rejected.",
+            "example": "me@example.com"
+          },
+          "password": {
+            "type": "string",
+            "format": "password",
+            "minLength": 8,
+            "maxLength": 72,
+            "description": "Must be between 8 and 72 bytes. The upper bound is bcrypt's limit; JSON Schema counts characters rather than bytes.",
+            "example": "password123"
+          }
+        }
+      },
+      "RegistrationResponse": {
+        "type": "object",
+        "required": [
+          "message",
+          "success",
+          "person"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "message": {
+            "type": "string",
+            "example": "You have successfully registered"
+          },
+          "success": {
+            "type": "boolean",
+            "example": true
+          },
+          "person": {
+            "$ref": "#/components/schemas/User"
+          }
+        }
+      },
+      "LoginRequest": {
+        "type": "object",
+        "required": [
+          "email",
+          "password"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "email": {
+            "type": "string",
+            "format": "email",
+            "description": "Email address used at registration. Normalized before lookup.",
+            "example": "me@example.com"
+          },
+          "password": {
+            "type": "string",
+            "format": "password",
+            "description": "Account password.",
+            "example": "password123"
+          }
+        }
+      },
+      "LoginResponse": {
+        "type": "object",
+        "required": [
+          "access_token",
+          "token_type",
+          "user"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "access_token": {
+            "type": "string",
+            "description": "HS256 access token. Send it as `Authorization: Bearer <token>`.",
+            "example": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+          },
+          "token_type": {
+            "type": "string",
+            "enum": [
+              "Bearer"
+            ],
+            "example": "Bearer"
+          },
+          "user": {
+            "$ref": "#/components/schemas/User"
+          }
+        }
+      },
+      "RefreshResponse": {
+        "type": "object",
+        "description": "The rotated refresh token travels only in the cookie, never in this body.",
+        "required": [
+          "access_token",
+          "token_type"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "access_token": {
+            "type": "string",
+            "description": "New HS256 access token.",
+            "example": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+          },
+          "token_type": {
+            "type": "string",
+            "enum": [
+              "Bearer"
+            ],
+            "example": "Bearer"
+          }
+        }
+      },
+      "LogoutResponse": {
+        "type": "object",
+        "required": [
+          "message"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "message": {
+            "type": "string",
+            "example": "logged out successfully"
+          }
+        }
+      },
+      "Product": {
+        "type": "object",
+        "required": [
+          "id",
+          "user_id",
+          "name",
+          "date_added",
+          "qty",
+          "price"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "example": "2f4d9d5e-3f1a-4c6b-9f3e-1a2b3c4d5e6f"
+          },
+          "user_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Owner. Always the authenticated caller for rows returned by this API.",
+            "example": "3f2b8c1e-9a4d-4f6b-8e21-7c5d0a1b2c3d"
+          },
+          "name": {
+            "type": "string",
+            "maxLength": 200,
+            "example": "Widget"
+          },
+          "date_added": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2026-01-15T10:30:00Z"
+          },
+          "qty": {
+            "type": "integer",
+            "minimum": 0,
+            "example": 2
+          },
+          "price": {
+            "type": "number",
+            "format": "double",
+            "minimum": 0,
+            "maximum": 9999999999.99,
+            "example": 9.99
+          }
+        }
+      },
+      "ProductCreateRequest": {
+        "type": "object",
+        "required": [
+          "name",
+          "qty",
+          "price"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "pattern": "\\S",
+            "description": "Trimmed before storage; must contain at least one non-whitespace character.",
+            "example": "Widget"
+          },
+          "qty": {
+            "type": "integer",
+            "minimum": 0,
+            "example": 2
+          },
+          "price": {
+            "type": "number",
+            "format": "double",
+            "minimum": 0,
+            "maximum": 9999999999.99,
+            "example": 9.99
+          }
+        }
+      },
+      "ProductUpdateRequest": {
+        "type": "object",
+        "required": [
+          "name",
+          "qty",
+          "price"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "pattern": "\\S",
+            "description": "Trimmed before storage; must contain at least one non-whitespace character.",
+            "example": "Widget Pro"
+          },
+          "qty": {
+            "type": "integer",
+            "minimum": 0,
+            "example": 3
+          },
+          "price": {
+            "type": "number",
+            "format": "double",
+            "minimum": 0,
+            "maximum": 9999999999.99,
+            "example": 12.25
+          }
+        }
+      },
+      "Order": {
+        "type": "object",
+        "required": [
+          "id",
+          "user_id",
+          "email",
+          "status",
+          "total",
+          "created_at",
+          "items"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "example": "8b1e2f3a-4c5d-6e7f-8a9b-0c1d2e3f4a5b"
+          },
+          "user_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Owner. Always the authenticated caller for rows returned by this API.",
+            "example": "3f2b8c1e-9a4d-4f6b-8e21-7c5d0a1b2c3d"
+          },
+          "email": {
+            "type": "string",
+            "format": "email",
+            "description": "Email snapshot of the buyer at order time.",
+            "example": "me@example.com"
+          },
+          "status": {
+            "type": "string",
+            "description": "Order lifecycle status. New orders are created as `pending` because this flow does not take a payment.",
+            "example": "pending"
+          },
+          "total": {
+            "type": "number",
+            "format": "double",
+            "minimum": 0,
+            "maximum": 9999999999.99,
+            "description": "Server-computed sum of unit price times quantity for every line.",
+            "example": 19.98
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2026-01-15T10:35:00Z"
+          },
+          "items": {
+            "type": "array",
+            "description": "One snapshot per ordered product. An itemless order encodes as an empty array.",
+            "items": {
+              "$ref": "#/components/schemas/OrderItem"
+            }
+          }
+        }
+      },
+      "OrderItem": {
+        "type": "object",
+        "description": "One product line in an order. Name and price are snapshots, so later catalog edits or deletes cannot rewrite order history.",
+        "required": [
+          "id",
+          "product_id",
+          "product_name",
+          "unit_price",
+          "qty"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "example": "5c6d7e8f-9a0b-1c2d-3e4f-5a6b7c8d9e0f"
+          },
+          "product_id": {
+            "type": "string",
+            "format": "uuid",
+            "nullable": true,
+            "description": "Null when the catalog product was deleted after the order was placed. The name and price snapshots keep the line readable.",
+            "example": "2f4d9d5e-3f1a-4c6b-9f3e-1a2b3c4d5e6f"
+          },
+          "product_name": {
+            "type": "string",
+            "description": "Product name captured at order time.",
+            "example": "Widget"
+          },
+          "unit_price": {
+            "type": "number",
+            "format": "double",
+            "minimum": 0,
+            "description": "Unit price captured at order time.",
+            "example": 9.99
+          },
+          "qty": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000000,
+            "example": 2
+          }
+        }
+      },
+      "OrderCreateRequest": {
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 100,
+            "description": "One line per product. Duplicate product IDs are rejected. Prices and totals are never accepted from the client.",
+            "items": {
+              "type": "object",
+              "required": [
+                "product_id",
+                "qty"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "product_id": {
+                  "type": "string",
+                  "format": "uuid",
+                  "description": "Product owned by the authenticated caller.",
+                  "example": "2f4d9d5e-3f1a-4c6b-9f3e-1a2b3c4d5e6f"
+                },
+                "qty": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 1000000,
+                  "example": 2
+                }
+              }
+            }
+          }
+        }
+      },
+      "DemoHelloRequest": {
+        "type": "object",
+        "description": "Body for `POST /demo/jobs/hello`. Both fields are optional; a blank or omitted name defaults to `world`.",
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 80,
+            "description": "Name to greet, trimmed before use. Blank or omitted means `world`.",
+            "example": "Ada"
+          },
+          "delay_seconds": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 300,
+            "default": 0,
+            "description": "Optional scheduling delay before the worker runs the task.",
+            "example": 0
+          }
+        }
+      },
+      "DemoReportRequest": {
+        "type": "object",
+        "description": "Body for `POST /demo/jobs/report`. Every field is optional and has a safe default.",
+        "additionalProperties": false,
+        "properties": {
+          "steps": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 20,
+            "default": 5,
+            "description": "Number of simulated steps in the report job.",
+            "example": 5
+          },
+          "fail_on_attempt": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 10,
+            "default": 0,
+            "description": "1-based attempt number that should fail deliberately so the retry path is exercised. `0` never fails.",
+            "example": 0
+          },
+          "delay_seconds": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 300,
+            "default": 0,
+            "description": "Optional scheduling delay before the worker runs the task.",
+            "example": 0
+          }
+        }
+      },
+      "DemoJob": {
+        "type": "object",
+        "description": "Redis-backed state of one demo job. Timestamps are UTC. Optional fields are omitted while zero.",
+        "required": [
+          "id",
+          "type",
+          "queue",
+          "status",
+          "attempt",
+          "max_retry",
+          "progress",
+          "created_at",
+          "updated_at"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{32}$",
+            "description": "128-bit random ID used as both the asynq task ID and the Redis key suffix.",
+            "example": "0f1e2d3c4b5a69788796a5b4c3d2e1f0"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "demo:hello",
+              "demo:report"
+            ],
+            "example": "demo:hello"
+          },
+          "queue": {
+            "type": "string",
+            "enum": [
+              "default",
+              "critical"
+            ],
+            "example": "default"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "queued",
+              "running",
+              "retrying",
+              "completed",
+              "failed"
+            ],
+            "example": "queued"
+          },
+          "attempt": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Current attempt. It is 1-based while the task runs and 0 before the first delivery.",
+            "example": 1
+          },
+          "max_retry": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Retry budget configured when the task was enqueued.",
+            "example": 2
+          },
+          "progress": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100,
+            "description": "Completion percentage reported by the worker.",
+            "example": 100
+          },
+          "step": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 20,
+            "description": "Optional current step. Omitted while zero.",
+            "example": 1
+          },
+          "total_steps": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 20,
+            "description": "Optional total number of steps. Omitted while zero.",
+            "example": 1
+          },
+          "delay_seconds": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 300,
+            "description": "Optional scheduling delay requested for this job. Omitted while zero.",
+            "example": 0
+          },
+          "result": {
+            "type": "string",
+            "description": "Optional success message written when the job completes.",
+            "example": "hello, Ada!"
+          },
+          "error": {
+            "type": "string",
+            "description": "Optional failure message written on a retry or permanent failure.",
+            "example": "demo: simulated failure on attempt 1"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2026-01-15T10:40:00Z"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2026-01-15T10:40:01Z"
+          }
+        }
+      }
+    }
+  }
+}

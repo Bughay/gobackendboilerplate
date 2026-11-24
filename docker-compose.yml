@@ -1,0 +1,132 @@
+# Local Postgres, Redis, the API and the background worker for development.
+#   docker compose up -d --build   start the whole stack
+#   docker compose up -d api       start only the API (plus its dependencies)
+#   docker compose up -d db        start only Postgres (run binaries on the host)
+# Production should point DATABASE_URL/REDIS_ADDR at managed services instead,
+# and this file can simply be deleted.
+
+# Both binaries call config.Load, so both must receive the same database and
+# Redis settings. One anchor keeps the API and worker environments from drifting
+# apart: a setting added here automatically reaches both.
+x-backend-env: &backend-env
+  # Hostname is the compose service name `db`, not localhost.
+  DATABASE_URL: postgres://${POSTGRES_USER:?POSTGRES_USER must be set in .env}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}@db:5432/${POSTGRES_DB:?POSTGRES_DB must be set in .env}?sslmode=disable
+  JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set in .env}
+  JWT_EXPIRY_HOURS: ${JWT_EXPIRY_HOURS:-1}
+  JWT_REFRESH_EXPIRY_DAYS: ${JWT_REFRESH_EXPIRY_DAYS:-7}
+  COOKIE_SECURE: ${COOKIE_SECURE:-true}
+  TRUSTED_PROXIES: ${TRUSTED_PROXIES:-}
+  RATE_LIMIT_ENABLED: ${RATE_LIMIT_ENABLED:-true}
+  REDIS_ADDR: redis:6379
+  # Cache database (0) and job database (2) are intentionally separate.
+  REDIS_DB: ${REDIS_DB:-0}
+  HTTP_ADDR: ":8080"
+  LOG_FORMAT: ${LOG_FORMAT:-json}
+  LOG_LEVEL: ${LOG_LEVEL:-info}
+  WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-10}
+  WORKER_QUEUES: ${WORKER_QUEUES:-default:10,critical:20,low:3}
+  WORKER_REDIS_DB: ${WORKER_REDIS_DB:-2}
+
+services:
+  db:
+    image: postgres:16
+    container_name: backend-db
+    # No defaults on purpose: a missing value is a configuration error, not
+    # something to quietly guess. These must match the user/password/database
+    # inside DATABASE_URL. Compose refuses to start if any of them is unset.
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER must be set in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
+      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB must be set in .env}
+    # Published so host tooling can reach it: migrations are applied by hand with
+    # psql, which needs this port.
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    # Report healthy only once Postgres accepts connections, so a client started
+    # immediately after `up` does not race the first boot. Plain interpolation is
+    # safe here: the environment block above already fails the whole file if the
+    # variables are missing.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # Redis backs the per-IP rate limiter (DB 0) and the asynq queues (DB 2).
+  # If it is down the API still boots and the limiter fails open (NopCache), but
+  # the worker cannot process anything until Redis returns.
+  redis:
+    image: redis:7-alpine
+    container_name: backend-redis
+    # Deliberately NOT published to the host: only the containers talk to Redis,
+    # and publishing 6379 collides with any Redis already running on the machine,
+    # which would break `docker compose up` for the whole stack.
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # The HTTP API, built from the Dockerfile in this directory. The image
+  # entrypoint is /app/api, so the command is left at its default.
+  api:
+    build: .
+    image: ego-api:dev
+    container_name: backend-api
+    # No env_file: the .env DATABASE_URL points at localhost, which inside the
+    # container is the container itself. Compose still reads .env for ${...}.
+    environment: *backend-env
+    ports:
+      - "8080:8080"
+    # Alpine's busybox wget exits 0 on a 2xx. Probe the same /health the API
+    # serves, on the port fixed by HTTP_ADDR above.
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    # Start only after dependencies answer, so the boot-time Postgres ping in
+    # internal/platform/db cannot fail on a race.
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    # The API allows itself 10s to drain; Docker's default 10s stop window can
+    # SIGKILL right on that boundary, so give it headroom.
+    stop_grace_period: 20s
+
+  # The asynq consumer. It uses the same image as the API because both binaries
+  # are built into it; only the entrypoint differs. No port: a worker serves
+  # nothing over HTTP.
+  worker:
+    build: .
+    image: ego-api:dev
+    # The image's ENTRYPOINT is the API, so the role is selected by overriding
+    # the entrypoint. Using `command` here would append an argument to /app/api
+    # and leave the API running twice.
+    entrypoint: ["/app/worker"]
+    environment: *backend-env
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    # Two replicas share the queues and split the work; asynq guarantees each
+    # task is delivered to exactly one of them.
+    deploy:
+      replicas: 2
+    # Let in-flight tasks finish. asynq's own shutdown timeout is 8s by default,
+    # so this window only bounds the container stop, not the handler work.
+    stop_grace_period: 30s
+
+volumes:
+  pgdata:
+  redisdata:

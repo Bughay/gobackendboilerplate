@@ -1,0 +1,40 @@
+# ── Secrets ───────────────────────────────────────────────────────────────────
+# The real environment file must never enter the build context. The final image
+# copies only the binary, but a cached layer could still retain these values.
+.env
+.env.*
+
+# ── Local state ───────────────────────────────────────────────────────────────
+# Scratch space named in .gitignore, plus Go caches created inside the workspace
+# when the environment cannot write to the default cache directories.
+.tmp/
+.gocache/
+.gomodcache/
+
+# ── Version control ───────────────────────────────────────────────────────────
+# Builds must not depend on local git state, and .git can be large.
+.git/
+.gitignore
+
+# ── Documentation ─────────────────────────────────────────────────────────────
+# Never affects the compiled binary; keeps the build context small.
+*.md
+
+# ── Docker metadata ───────────────────────────────────────────────────────────
+# The image does not need the files describing how to build or run it.
+Dockerfile
+.dockerignore
+docker-compose.yml
+
+# ── Host-built artifacts ──────────────────────────────────────────────────────
+# A stray `go build` on the host must not leak a stale binary into the image.
+/server
+/ego-server
+/api
+/worker
+*.exe
+
+# ── Test and coverage output ──────────────────────────────────────────────────
+*.test
+*.out
+coverage.*
